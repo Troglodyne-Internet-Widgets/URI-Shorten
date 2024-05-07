@@ -11,20 +11,18 @@ use Carp::Always;
 use POSIX qw{floor};
 use DBI;
 use DBD::SQLite;
-use List::Util qw{shuffle};
 use File::Touch;
+use Crypt::PRNG;
 
 =head1 SYNOPSIS
 
-    # Just run this and store it somewhere, hardcode it if you like
-    my $secret = new_letter_ordering();
-    ...
     # Actually shortening the URIs
     my $s = URI::Shortener->new(
-        secret => $secret,
+        domain => 'ACGT',
         prefix => 'https://go.mydomain.test/short',
         dbname => '/opt/myApp/uris.db',
-        offset => 90210,
+        seed   => 90210,
+        length => 12,
     );
     my $uri = 'https://mydomain.test/somePath';
     # Persistently memoizes via sqlite
@@ -49,35 +47,34 @@ We use sqlite for persistence.
 
 =head2 ALGORITHM
 
-The particular algorithm used to generate the ciphertext composing the shortened URI is simple.
+The particular algorithm used to generate the ciphertext composing the shortened URI is Crypt::PRNG's 'fortuna'.
+This is used to make it very difficult to guess valid shortened URIs.
 
-Suppose $rowId is the database row corresponding to a given URI.
+The seed used is the one passed to the constructor plus the database row ID.
+As there is no guarantee of uniform distribution, such as in a Mersenne Twister, sometimes this will fail.
+Even were we using such, nobody ever implements nth-guess, which means we have to slog through actual generation which is worse performing than miss/retry in practice.
 
-The text will be of this length:
+In such events, we simply burn the ID (leaving it as a dead record) and move on until we succeed.
+This is implemented by goto &shorten, which means in the event you run out of possible URIs, you will smash the stack or fill your disk (whichever comes first).
 
-floor($rowId / len($secret)) + 1;
-
-It then adds a character from $secret at the position:
-
-$rowId % len($secret)
-
-And for each additional character, we then select the next character in $secret, modulus the length so that we wrap around if needed.
-
-In short, it's a crude substitution cipher and one-time pad.
+As such we die after failing 64 times to prevent such outcomes.
+This is also why a pruning method for old records has been provided.
 
 =head2 IMPORTANT
 
-This can be improved to make corresponding DB IDs more difficult to guess by including an Identifier salt (the 'offset' parameter).
-The difficulty of bruting for valid URIs scales with the size of the secret; a-zA-Z would be factorial(26+26)=8e67 possible permutations.
+It must be stressed that choosing a sufficiently large domain and length is important.
+Sane defaults are used, but if you choose something lesser, you will have to prune aggressively to prevent bad outcomes.
+You are basically "locked in" to your choice of domain/length/seed once you put something based upon this into production.
 
-That said you shouldn't store particularly sensitive information in any URI, or attempt to use this as a means of access control.
+The difficulty of bruting for valid URIs scales with the size of the domain and length.
+
+You shouldn't store particularly sensitive information in any URI, or attempt to use this as a means of access control.
 It only takes one right guess to ruin someone's day.
-You shouldn't use link shorteners for this at all, but many have done so and many will in the future.
 
 I strongly recommend that you configure whatever serves these URIs be behind a fail2ban rule that bans 3 or more 4xx responses.
 
-The secret used is not stored in the DB, so don't lose it.
-You can't use a DB valid for any other secret and expect anything but GIGO.
+The domain & seed used is not stored in the DB, so don't lose it.
+You can't use a DB valid for any other domain/seed and expect anything but GIGO.
 
 Multiple different prefixes for the shortened URIs are OK though.
 The more you use, the harder it is to guess valid URIs.
@@ -87,16 +84,9 @@ Sometimes, CNAMEs are good for something.
 
 If you prune old DB records and your database engine will then reuse these IDs, be aware that this will result in some old short URIs resolving to new pages.
 
-The ciphertext generated will be unique supposing that every character in $secret is as well.
-The new_letter_ordering() subroutine is provided which can give you precisely that.
-It's a random ordering of a..zA..z.
-If you need more than those characters, use a different secret.
-
-I would recommend passing List::Util::uniq(split(//, $secret)) to avoid issues with duplicated characters in $secret if you can't manually verify it.
-
 =head2 UTF-8
 
-I have not tested this module with UTF8 secrets.
+I have not tested this module with a UTF8 domain.
 My expectation is that it will not work at all with it, but this could be patched straighforwardly.
 
 =cut
@@ -127,20 +117,32 @@ CREATE INDEX IF NOT EXISTS created_idx ON uris(created);
 
 See SYNOPSIS for supported optiosn.
 
-We setting a default 'offset' of 0, and strip trailing slash(es) from the prefix.
+We strip trailing slash(es) from the prefix.
 
 The 'dbfile' you pass will be created automatically for you if possible.
 Otherwise we will croak the first time you run shorten() or lengthen().
+
+length controls the length of the minified path component.
+Defaulted to 12 when not a member of the natural numbers.
+
+domain is by default a..zA..Z as a string.
+
+This is obviously an n Choose k situation, which means the default number of URIs possible is:
+
+558,383,307,300
+
+Which I should hope is more than enough for most use cases.
 
 =cut
 
 sub new {
     my ( $class, %options ) = @_;
-    foreach my $required (qw{secret prefix dbname}) {
+    $options{domain} ||= join('',('a'..'z','A'..'Z'));
+
+    foreach my $required (qw{domain prefix dbname seed}) {
         die "$required required" unless $options{$required};
     }
-
-    $options{offset} //= 0;
+    $options{length} = 12 if !$options{length} || $options{length} < 0;
 
     # Strip trailing slash from prefix
     $options{prefix} =~ s|/+$||;
@@ -149,44 +151,18 @@ sub new {
 
 =head1 METHODS
 
-=head2 new_letter_ordering()
+=head2 cipher( INTEGER $id )
 
-Static method.  Returns a shuffle of a-zA-Z.
+Wrapper around Crypt::PRNG::string_from().
 
-This results in a secret which produces URIs which can be spoken aloud in NATO phonetic alphabet.
-I presume this is the primary usefulness of URL shorteners aside from phishing scams.
-
-=cut
-
-# Use to generate $random_letter_ordering
-sub new_letter_ordering {
-    my @valid    = ( 'a' .. 'z', 'A' .. 'Z' );
-    return join( '', shuffle(@valid) );
-}
-
-=head2 cipher( STRING $secret, INTEGER $id )
-
-Expects a bytea[] style string (e.g. "Good old fashioned perl strings") as opposed to the char[] you get when the UTF8 flag is high.
-Returns the string representation of the provided ID via the algorithm described above.
+Uses the passed seed + id as the seed, and builds string_from via the domain passed to the constructor.
 
 =cut
 
 sub cipher {
-    my ( $secret, $id ) = @_;
-
-    my $len = length($secret);
-    my $div = floor( $id / $len ) + 1;
-    my $rem = $id % $len;
-
-    my $ciphertext = '';
-    my $cpos       = $rem;
-    for ( 0 .. $div ) {
-        $ciphertext .= substr( $secret, $cpos, 1 );
-        $cpos++;
-        $cpos = ( $cpos % $len );
-    }
-
-    return $ciphertext;
+    my ( $self, $id ) = @_;
+    my $rr = Crypt::PRNG->new('Fortuna', $self->{seed} + $id);
+    return $rr->string_from($self->{domain}, $self->{length});
 }
 
 =head2 shorten($uri)
@@ -195,9 +171,10 @@ Transform original URI into a shortened one.
 
 =cut
 
-# Like with any substitution cipher, reversal is trivial when the secret is known.
+# Like with any substitution cipher, reversal is trivial when the domain is known.
 # But, if we have to fetch the URI anyways, we may as well just store the cipher for reversal (aka the "god algorithm").
 # This allows us the useful feature of being able to use many URI prefixes.
+my $smash=0;
 sub shorten {
     my ( $self, $uri ) = @_;
 
@@ -206,9 +183,17 @@ sub shorten {
     my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $uri );
     $rows //= [];
     if (@$rows) {
-        return $rows->[0]{cipher} if $rows->[0]{cipher};
+        return $self->{prefix}."/".$rows->[0]{cipher} if $rows->[0]{cipher};
         my $ciphered = $self->cipher( $rows->[0]{id} );
-        $self->_dbh()->do( "UPDATE uris SET cipher=? WHERE id=?", undef, $ciphered, $rows->[0]{id} ) or die $self->dbh()->errstr;
+        my $worked = $self->_dbh()->do( "UPDATE uris SET cipher=? WHERE id=?", undef, $ciphered, $rows->[0]{id} );
+        # In the (incredibly rare) event of a collision, just burn the row and move on.
+        if (!$worked) {
+            warn "DANGER: cipher collision detected.";
+            $self->_dbh()->do( "UPDATE uris SET uri=? WHERE id=?", undef, "$uri-BURNED$smash", $rows->[0]{id} ) or die "Could not burn row";
+            $smash++;
+            die "Too many failures to avoid name collisions encountered, prune your DB!" if $smash > 64;
+            goto \&shorten;
+        }
         return $self->{prefix} . "/" . $ciphered;
     }
 
