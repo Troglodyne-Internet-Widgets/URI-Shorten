@@ -4,6 +4,7 @@ use warnings;
 use Test::Fatal qw{exception};
 use FindBin::libs;
 use URI::Shortener;
+use Capture::Tiny qw{capture_merged};
 
 use Test::More tests => 3;
 
@@ -46,5 +47,5 @@ subtest 'going to the circle 8 track' => sub {
         length => 1,
     );
     is( $s->shorten('foo'), 'bar/A', "Works fine, right?");
-    like( exception { $s->shorten('hug') }, qr/too many failures/i, "Stack smashing guard encountered");
+    like( exception { capture_merged { $s->shorten('hug') } }, qr/too many failures/i, "Stack smashing guard encountered");
 };
