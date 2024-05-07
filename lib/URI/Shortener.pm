@@ -40,7 +40,9 @@ use Crypt::PRNG;
 Provides utility methods so that you can:
 
 1) Create a new short uri and store it for usage later
+
 2) Persistently pull it up
+
 3) Store a creation time so you can prune the database later.
 
 We use sqlite for persistence.
@@ -115,7 +117,7 @@ CREATE INDEX IF NOT EXISTS created_idx ON uris(created);
 
 =head2 $class->new(%options)
 
-See SYNOPSIS for supported optiosn.
+See SYNOPSIS for supported options.
 
 We strip trailing slash(es) from the prefix.
 
