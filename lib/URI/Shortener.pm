@@ -5,6 +5,8 @@ package URI::Shortener;
 use strict;
 use warnings;
 
+use v5.012;
+
 use Carp::Always;
 use POSIX qw{floor};
 use DBI;
@@ -14,26 +16,26 @@ use File::Touch;
 
 =head1 SYNOPSIS
 
-	# Just run this and store it somewhere, hardcode it if you like
-	my $secret = new_letter_ordering();
-	...
-	# Actually shortening the URIs
-	my $s = URI::Shortener->new(
-		secret => $secret,
-		prefix => 'https://go.mydomain.test/short',
-		dbname => '/opt/myApp/uris.db',
-		offset => 90210,
-	);
-	my $uri = 'https://mydomain.test/somePath';
-	# Persistently memoizes via sqlite
-	my $short = $s->shorten( $uri );
-	# Short will look like 'https://go.mydomain.test/short/szAgqIE
-	...
-	# Presumption here is that your request router knows what to do with this, e.g. issue a 302:
-	my $long = $s->lengthen( $short );
-	...
-	# Prune old URIs
-	$s->prune_before(time());
+    # Just run this and store it somewhere, hardcode it if you like
+    my $secret = new_letter_ordering();
+    ...
+    # Actually shortening the URIs
+    my $s = URI::Shortener->new(
+        secret => $secret,
+        prefix => 'https://go.mydomain.test/short',
+        dbname => '/opt/myApp/uris.db',
+        offset => 90210,
+    );
+    my $uri = 'https://mydomain.test/somePath';
+    # Persistently memoizes via sqlite
+    my $short = $s->shorten( $uri );
+    # Short will look like 'https://go.mydomain.test/short/szAgqIE
+    ...
+    # Presumption here is that your request router knows what to do with this, e.g. issue a 302:
+    my $long = $s->lengthen( $short );
+    ...
+    # Prune old URIs
+    $s->prune_before(time());
 
 =head1 DESCRIPTION
 
@@ -102,15 +104,15 @@ My expectation is that it will not work at all with it, but this could be patche
 our $SCHEMA = qq{
 CREATE TABLE IF NOT EXISTS uris (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-	prefix_id INTEGER NOT NULL REFERENCES prefix(id) ON DELETE CASCADE,
+    prefix_id INTEGER NOT NULL REFERENCES prefix(id) ON DELETE CASCADE,
     uri TEXT NOT NULL UNIQUE,
-	cipher TEXT DEFAULT NULL UNIQUE,
-	created INTEGER
+    cipher TEXT DEFAULT NULL UNIQUE,
+    created INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS prefix (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	prefix TEXT NOT NULL UNIQUE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prefix TEXT NOT NULL UNIQUE
 );
 
 CREATE INDEX IF NOT EXISTS uri_idx     ON uris(uri);
@@ -158,15 +160,8 @@ I presume this is the primary usefulness of URL shorteners aside from phishing s
 
 # Use to generate $random_letter_ordering
 sub new_letter_ordering {
-    no strict;
-    no warnings;
-    my @valid    = ( a .. z, A .. Z );
-    my $len      = @valid;
-    my @shuffled = shuffle(@valid);
-    my $new      = join( '', @shuffled );
-    use strict;
-    use warnings;
-    return $new;
+    my @valid    = ( 'a' .. 'z', 'A' .. 'Z' );
+    return join( '', shuffle(@valid) );
 }
 
 =head2 cipher( STRING $secret, INTEGER $id )
@@ -185,7 +180,7 @@ sub cipher {
 
     my $ciphertext = '';
     my $cpos       = $rem;
-    foreach my $char ( 0 .. $div ) {
+    for ( 0 .. $div ) {
         $ciphertext .= substr( $secret, $cpos, 1 );
         $cpos++;
         $cpos = ( $cpos % $len );
@@ -243,7 +238,7 @@ sub lengthen {
 
     my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $cipher, $self->{prefix} );
     $rows //= [];
-    return undef unless @$rows;
+    return unless @$rows;
     return $rows->[0]{uri};
 }
 
