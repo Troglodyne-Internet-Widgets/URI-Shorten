@@ -133,15 +133,16 @@ Otherwise we will croak the first time you run shorten() or lengthen().
 =cut
 
 sub new {
-	my ($class, %options) = @_;
+    my ( $class, %options ) = @_;
     foreach my $required (qw{secret prefix dbname}) {
         die "$required required" unless $options{$required};
     }
 
-	$options{offset} //= 0;
-	# Strip trailing slash from prefix
-	$options{prefix} =~ s|/+$||;
-	return bless(\%options, $class);
+    $options{offset} //= 0;
+
+    # Strip trailing slash from prefix
+    $options{prefix} =~ s|/+$||;
+    return bless( \%options, $class );
 }
 
 =head1 METHODS
@@ -157,15 +158,15 @@ I presume this is the primary usefulness of URL shorteners aside from phishing s
 
 # Use to generate $random_letter_ordering
 sub new_letter_ordering {
-	no strict;
-	no warnings;
-	my @valid = (a..z,A..Z);
-	my $len = @valid;
-	my @shuffled = shuffle(@valid);
-	my $new = join('', @shuffled);
-	use strict;
-	use warnings;
-	return $new;
+    no strict;
+    no warnings;
+    my @valid    = ( a .. z, A .. Z );
+    my $len      = @valid;
+    my @shuffled = shuffle(@valid);
+    my $new      = join( '', @shuffled );
+    use strict;
+    use warnings;
+    return $new;
 }
 
 =head2 cipher( STRING $secret, INTEGER $id )
@@ -176,21 +177,21 @@ Returns the string representation of the provided ID via the algorithm described
 =cut
 
 sub cipher {
-	my ($secret, $id) = @_;
+    my ( $secret, $id ) = @_;
 
-	my $len = length($secret);
-	my $div = floor($id / $len) + 1;
-	my $rem = $id % $len;
+    my $len = length($secret);
+    my $div = floor( $id / $len ) + 1;
+    my $rem = $id % $len;
 
-	my $ciphertext = '';
-	my $cpos = $rem;
-	foreach my $char (0..$div) {
-		$ciphertext .= substr($secret, $cpos, 1);
-		$cpos++;
-		$cpos = ($cpos % $len);
-	}
+    my $ciphertext = '';
+    my $cpos       = $rem;
+    foreach my $char ( 0 .. $div ) {
+        $ciphertext .= substr( $secret, $cpos, 1 );
+        $cpos++;
+        $cpos = ( $cpos % $len );
+    }
 
-	return $ciphertext;
+    return $ciphertext;
 }
 
 =head2 shorten($uri)
@@ -203,29 +204,29 @@ Transform original URI into a shortened one.
 # But, if we have to fetch the URI anyways, we may as well just store the cipher for reversal (aka the "god algorithm").
 # This allows us the useful feature of being able to use many URI prefixes.
 sub shorten {
-	my ($self,$uri) = @_;
+    my ( $self, $uri ) = @_;
 
-	my $query = "SELECT id, cipher FROM uris WHERE uri=?";
+    my $query = "SELECT id, cipher FROM uris WHERE uri=?";
 
-	my $rows = $self->_dbh()->selectall_arrayref($query, { Slice => {} }, $uri);
-	$rows //= [];
-	if (@$rows) {
-		return $rows->[0]{cipher} if $rows->[0]{cipher};
-		my $ciphered = $self->cipher($rows->[0]{id});
-		$self->_dbh()->do("UPDATE uris SET cipher=? WHERE id=?", undef, $ciphered, $rows->[0]{id}) or die $self->dbh()->errstr;
-		return $self->{prefix}."/".$ciphered;
-	}
-
-	# Otherwise we need to store the URI and retrieve the ID.
-    my $pis = "SELECT id FROM prefix WHERE prefix=?";
-    my $has_prefix = $self->_dbh->selectall_arrayref($pis, { Slice => {} }, $self->{prefix});
-    unless (@$has_prefix) {
-        $self->_dbh()->do("INSERT INTO prefix (prefix) VALUES (?)", undef, $self->{prefix}) or die $self->_dbh()->errstr;
+    my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $uri );
+    $rows //= [];
+    if (@$rows) {
+        return $rows->[0]{cipher} if $rows->[0]{cipher};
+        my $ciphered = $self->cipher( $rows->[0]{id} );
+        $self->_dbh()->do( "UPDATE uris SET cipher=? WHERE id=?", undef, $ciphered, $rows->[0]{id} ) or die $self->dbh()->errstr;
+        return $self->{prefix} . "/" . $ciphered;
     }
 
-	my $qq = "INSERT INTO uris (uri,created,prefix_id) VALUES (?,?,(SELECT id FROM prefix WHERE prefix=?))";
-	$self->_dbh()->do($qq, undef, $uri, time(),$self->{prefix}) or die $self->dbh()->errstr;
-	goto \&shorten;
+    # Otherwise we need to store the URI and retrieve the ID.
+    my $pis        = "SELECT id FROM prefix WHERE prefix=?";
+    my $has_prefix = $self->_dbh->selectall_arrayref( $pis, { Slice => {} }, $self->{prefix} );
+    unless (@$has_prefix) {
+        $self->_dbh()->do( "INSERT INTO prefix (prefix) VALUES (?)", undef, $self->{prefix} ) or die $self->_dbh()->errstr;
+    }
+
+    my $qq = "INSERT INTO uris (uri,created,prefix_id) VALUES (?,?,(SELECT id FROM prefix WHERE prefix=?))";
+    $self->_dbh()->do( $qq, undef, $uri, time(), $self->{prefix} ) or die $self->dbh()->errstr;
+    goto \&shorten;
 }
 
 =head2 lengthen($uri)
@@ -235,15 +236,15 @@ Transform shortened URI into it's original.
 =cut
 
 sub lengthen {
-	my ($self,$uri) = @_;
-	my ($cipher) = $uri =~ m|^\Q$self->{prefix}\E/(.*)$|;
+    my ( $self, $uri ) = @_;
+    my ($cipher) = $uri =~ m|^\Q$self->{prefix}\E/(.*)$|;
 
-	my $query = "SELECT uri FROM uris WHERE cipher=? AND prefix_id IN (SELECT id FROM prefix WHERE prefix=?)";
+    my $query = "SELECT uri FROM uris WHERE cipher=? AND prefix_id IN (SELECT id FROM prefix WHERE prefix=?)";
 
-	my $rows = $self->_dbh()->selectall_arrayref($query, { Slice => {} }, $cipher, $self->{prefix});
-	$rows //= [];
-	return undef unless @$rows;
-	return $rows->[0]{uri};
+    my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $cipher, $self->{prefix} );
+    $rows //= [];
+    return undef unless @$rows;
+    return $rows->[0]{uri};
 }
 
 =head2 prune_before(TIME_T $when)
@@ -253,18 +254,19 @@ Remove entries older than UNIX timestamp $when.
 =cut
 
 sub prune_before {
-	my ($self, $when) = @_;
-	$self->_dbh()->do("DELETE FROM uris WHERE created < ?", undef, $when) or die $self->dbh()->errstr;
-	return 1;
+    my ( $self, $when ) = @_;
+    $self->_dbh()->do( "DELETE FROM uris WHERE created < ?", undef, $when ) or die $self->dbh()->errstr;
+    return 1;
 }
 
 my $dbh = {};
+
 sub _dbh {
-    my ( $self ) = @_;
-	my $dbname = $self->{dbname};
+    my ($self) = @_;
+    my $dbname = $self->{dbname};
     return $dbh->{$dbname} if exists $dbh->{$dbname};
 
-	# Some systems splash down without this.  YMMV.
+    # Some systems splash down without this.  YMMV.
     File::Touch::touch($dbname) if $dbname ne ':memory:' && !-f $dbname;
 
     my $db = DBI->connect( "dbi:SQLite:dbname=$dbname", "", "" );
@@ -274,8 +276,9 @@ sub _dbh {
     $dbh->{$dbname} = $db;
 
     # Turn on fkeys
-    $db->do("PRAGMA foreign_keys = ON")  or die "Could not enable foreign keys";
-     # Turn on WALmode, performance
+    $db->do("PRAGMA foreign_keys = ON") or die "Could not enable foreign keys";
+
+    # Turn on WALmode, performance
     $db->do("PRAGMA journal_mode = WAL") or die "Could not enable WAL mode";
 
     return $db;
