@@ -1,5 +1,8 @@
 Revision history for URI-Shorten
 
+1.003 2024-05-08 TEODESIAN
+    - Improve POD
+
 1.002 2024-05-08 TEODESIAN
     - Correct crash during failure modes
 
