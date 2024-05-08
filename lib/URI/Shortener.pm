@@ -207,7 +207,7 @@ sub shorten {
     }
 
     my $qq = "INSERT INTO uris (uri,created,prefix_id) VALUES (?,?,(SELECT id FROM prefix WHERE prefix=?))";
-    $self->_dbh()->do( $qq, undef, $uri, time(), $self->{prefix} ) or die $self->dbh()->errstr;
+    $self->_dbh()->do( $qq, undef, $uri, time(), $self->{prefix} ) or die $self->_dbh()->errstr;
     goto \&shorten;
 }
 
@@ -237,7 +237,7 @@ Remove entries older than UNIX timestamp $when.
 
 sub prune_before {
     my ( $self, $when ) = @_;
-    $self->_dbh()->do( "DELETE FROM uris WHERE created < ?", undef, $when ) or die $self->dbh()->errstr;
+    $self->_dbh()->do( "DELETE FROM uris WHERE created < ?", undef, $when ) or die $self->_dbh()->errstr;
     return 1;
 }
 
