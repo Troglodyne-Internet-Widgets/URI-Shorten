@@ -278,11 +278,15 @@ sub new {
     # Strip trailing slash from prefix
     $options{prefix} =~ s|/+$||;
 
+    $options{sqlite_schema} = $SCHEMA_SQLITE;
+    $options{mysql_schema}  = $SCHEMA_MYSQL;
+    $options{pg_schema}     = $SCHEMA_PG;
+
     # Mongle the schema appropriately
     foreach my $sql_obj (keys(%$SCHEMA_NAMES)) {
-        $SCHEMA_SQLITE =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-        $SCHEMA_MYSQL  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-        $SCHEMA_PG     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+        $options{sqlite_schema} =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+        $options{mysql_schema}  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+        $options{pg_schema}     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
     }
 
     $options{dbh} = {};
@@ -398,7 +402,7 @@ sub _sqlite_dbh {
 
     my $db = DBI->connect( "dbi:SQLite:dbname=$dbname", "", "" );
     $db->{sqlite_allow_multiple_statements} = 1;
-    $db->do($SCHEMA_SQLITE) or die "Could not ensure database consistency: " . $db->errstr;
+    $db->do($self->{sqlite_schema}) or die "Could not ensure database consistency: " . $db->errstr;
     $db->{sqlite_allow_multiple_statements} = 0;
     $self->{dbh}->{$dbname} = $db;
 
@@ -425,7 +429,7 @@ sub _pg_dbh {
 
     #XXX pg is noisy even when you say 'IF NOT EXISTS'
     my $result;
-    capture_merged { $result = $db->do($SCHEMA_PG) };
+    capture_merged { $result = $db->do($self->{pg_schema}) };
     die "Could not ensure database consistency: " . $db->errstr unless $result;
 
     $self->{dbh}->{$dbname} = $db;
@@ -452,7 +456,7 @@ sub _my_dbh {
     my $dsn = "dbi:mysql:mysql_multi_statements=1;database=$dbname;".$df."host=$host;port=$port";
 
     my $db = DBI->connect($dsn, $user, $pass);
-    $db->do($SCHEMA_MYSQL) or die "Could not ensure database consistency: " . $db->errstr;
+    $db->do($self->{mysql_schema}) or die "Could not ensure database consistency: " . $db->errstr;
     $self->{dbh}->{$dbname} = $db;
     return $db;
 }
