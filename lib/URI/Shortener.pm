@@ -122,11 +122,11 @@ Mysql's BIGINT in particular is different than Postgres' BIGSERIAL and SQLite's 
 If the names of the tables/indexes collides with stuff already in your DB, you can pass parameters to the constructor to fix that.
 Here are the defaults:
 
-	uri_tablename    => 'uris',
-	prefix_tablename => 'prefix',
-	uri_idxname      => 'uri_idx',
-	prefix_idxname   => 'prefix_idx',
-	cipher_idxname   => 'cipher_idx',
+    uri_tablename    => 'uris',
+    prefix_tablename => 'prefix',
+    uri_idxname      => 'uri_idx',
+    prefix_idxname   => 'prefix_idx',
+    cipher_idxname   => 'cipher_idx',
     created_idxname  => 'created_idx',
 
 Be aware that this is done via regexp replacement, so if you have too similar of names, bad things will occur.
@@ -142,11 +142,11 @@ Pull requests welcome.
 =cut
 
 my $SCHEMA_NAMES = {
-	uri_tablename    => 'uris',
-	prefix_tablename => 'prefix',
-	uri_idxname      => 'uri_idx',
-	prefix_idxname   => 'prefix_idx',
-	cipher_idxname   => 'cipher_idx',
+    uri_tablename    => 'uris',
+    prefix_tablename => 'prefix',
+    uri_idxname      => 'uri_idx',
+    prefix_idxname   => 'prefix_idx',
+    cipher_idxname   => 'cipher_idx',
     created_idxname  => 'created_idx',
 };
 
@@ -194,7 +194,7 @@ our $SCHEMA_MYSQL = qq{
 CREATE TABLE IF NOT EXISTS prefix_tablename (
     id INTEGER AUTO_INCREMENT,
     prefix TEXT NOT NULL,
-	PRIMARY KEY(id)
+    PRIMARY KEY(id)
 );
 
 CREATE TABLE IF NOT EXISTS uri_tablename (
@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS uri_tablename (
     uri TEXT NOT NULL,
     cipher VARCHAR(180) DEFAULT NULL UNIQUE,
     created INTEGER,
-	PRIMARY KEY(id)
+    PRIMARY KEY(id)
 );
 
 };
@@ -262,10 +262,10 @@ Which I should hope is more than enough for most use cases.
 
 sub new {
     my $class = shift;
-	my %options = (
-		%$SCHEMA_NAMES,
-		@_
-	);
+    my %options = (
+        %$SCHEMA_NAMES,
+        @_
+    );
     $options{dbtype} //= 'sqlite';
 
     $options{domain} ||= join('',('a'..'z','A'..'Z'));
@@ -278,14 +278,14 @@ sub new {
     # Strip trailing slash from prefix
     $options{prefix} =~ s|/+$||;
 
-	# Mongle the schema appropriately
-	foreach my $sql_obj (keys(%$SCHEMA_NAMES)) {
-		$SCHEMA_SQLITE =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-		$SCHEMA_MYSQL  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-		$SCHEMA_PG     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-	}
+    # Mongle the schema appropriately
+    foreach my $sql_obj (keys(%$SCHEMA_NAMES)) {
+        $SCHEMA_SQLITE =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+        $SCHEMA_MYSQL  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+        $SCHEMA_PG     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+    }
 
-	$options{dbh} = {};
+    $options{dbh} = {};
 
     return bless( \%options, $class );
 }
@@ -423,10 +423,10 @@ sub _pg_dbh {
 
     my $db = DBI->connect("dbi:Pg:dbname=$dbname;host=$host;port=$port", $user, $pass);
 
-	#XXX pg is noisy even when you say 'IF NOT EXISTS'
-	my $result;
+    #XXX pg is noisy even when you say 'IF NOT EXISTS'
+    my $result;
     capture_merged { $result = $db->do($SCHEMA_PG) };
-	die "Could not ensure database consistency: " . $db->errstr unless $result;
+    die "Could not ensure database consistency: " . $db->errstr unless $result;
 
     $self->{dbh}->{$dbname} = $db;
     return $db;
@@ -442,14 +442,14 @@ sub _my_dbh {
     my $user = $self->{dbuser} // $ENV{DBI_USER};
     my $pass = $self->{dbpass} // $ENV{MYSQL_PWD};
 
-	# Handle the mysql defaults file
-	my $defaults_file = $self->{mysql_read_default_file} // "$ENV{HOME}/.my.cnf";
-	my $defaults_group = $self->{mysql_read_default_group} // 'client';
-	my $df = "";
-	$df .= "mysql_read_default_file=$defaults_file;"   if -f $defaults_file;
-	$df .= "mysql_read_default_group=$defaults_group;" if $defaults_group;
+    # Handle the mysql defaults file
+    my $defaults_file = $self->{mysql_read_default_file} // "$ENV{HOME}/.my.cnf";
+    my $defaults_group = $self->{mysql_read_default_group} // 'client';
+    my $df = "";
+    $df .= "mysql_read_default_file=$defaults_file;"   if -f $defaults_file;
+    $df .= "mysql_read_default_group=$defaults_group;" if $defaults_group;
 
-	my $dsn = "dbi:mysql:mysql_multi_statements=1;database=$dbname;".$df."host=$host;port=$port";
+    my $dsn = "dbi:mysql:mysql_multi_statements=1;database=$dbname;".$df."host=$host;port=$port";
 
     my $db = DBI->connect($dsn, $user, $pass);
     $db->do($SCHEMA_MYSQL) or die "Could not ensure database consistency: " . $db->errstr;
