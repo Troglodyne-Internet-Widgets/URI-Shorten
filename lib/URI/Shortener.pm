@@ -11,9 +11,6 @@ use Capture::Tiny qw{capture_merged};
 use Carp::Always;
 use POSIX qw{floor};
 use DBI;
-use DBD::SQLite;
-use DBD::Pg;
-use DBD::mysql;
 use File::Touch;
 use Crypt::PRNG;
 
@@ -131,6 +128,13 @@ Here are the defaults:
 
 Be aware that this is done via regexp replacement, so if you have too similar of names, bad things will occur.
 
+=head2 GRANTS
+
+On DBs that support grants, it is your responsibility to setup grants for the various users accessing these tables.
+In general we make the assumption that the creator of the tables is the exclusive user of it, and this is generally a wise policy.
+Specific functions on public DBs should have their own users to minimize the impact of any given login being compromised.
+This module is designed to be self-contained and never really needs to be queried in any way other than normal operation.
+
 =head2 MYSQL LIMITATIONS
 
 Due to the nature of mysql's text handling, we don't make the 'uri' or 'prefix' fields in their respective tables unique.
@@ -138,6 +142,7 @@ Similarly, the cipher (domain) length is limited to 180 chars, as this is about 
 
 We also are not creating any indices whatsoever.
 Pull requests welcome.
+
 
 =cut
 
@@ -457,6 +462,7 @@ sub _my_dbh {
 
     my $db = DBI->connect($dsn, $user, $pass);
     $db->do($self->{mysql_schema}) or die "Could not ensure database consistency: " . $db->errstr;
+
     $self->{dbh}->{$dbname} = $db;
     return $db;
 }
