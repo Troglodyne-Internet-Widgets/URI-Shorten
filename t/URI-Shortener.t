@@ -5,6 +5,7 @@ use Test::Fatal qw{exception};
 use FindBin::libs;
 use URI::Shortener;
 use Capture::Tiny qw{capture_merged};
+use DBD::SQLite;
 
 use Test::More tests => 4;
 
