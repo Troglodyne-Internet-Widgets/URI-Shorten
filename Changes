@@ -15,6 +15,13 @@ Revision history for URI-Shorten
     - For ff1, new() dies when the domain has a character two times,
       or when length(domain) ** length is less than 1,000,000.
       For fortuna, new() dies when the seed is not a number.
+    - For ff1, new() dies when length is 2**32 or more.
+      This is the maximum that NIST SP 800-38G sets.
+      Without this check, Math::BigInt with the LTM library computed a wrong space for such a length.
+    - The tests run FF1 against test vectors from outside this distribution.
+      These are the NIST ACVP vectors and vectors of Bouncy Castle, the Rust crate fpe and the Ubiq C library.
+      By default the tests run some ACVP cases of each group.
+      If RELEASE_TESTING is set, they run all 750.
     - new() dies when algorithm is not 'ff1' or 'fortuna'.
     - Add decipher(), which gives the row ID of an ff1 cipher.
     - Correct the number of possible URIs in the POD.

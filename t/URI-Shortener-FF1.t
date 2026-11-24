@@ -99,6 +99,60 @@ subtest 'perl integers and Math::BigInt agree' => sub {
     }
 };
 
+subtest 'large radixes, both sides of the 2**53 limit, and long tweaks' => sub {
+
+    # For each radix, the lengths on each side of the largest length that perl integers hold: 4 for radix 65536, 10
+    # for radix 255 to 257, and 88 for radix 2.  The tweaks reach past one AES block, and past 255 bytes.
+    my %lengths = (
+        65_536 => [ 2,  3,  4, 5 ],
+        257    => [ 3,  10, 11 ],
+        256    => [ 3,  10, 11 ],
+        255    => [ 3,  10, 11 ],
+        2      => [ 20, 21, 88, 89 ],
+    );
+    my @tweaks = ( 0, 1, 15, 16, 17, 255, 256, 1000 );
+    my $key    = pack( 'H*', '000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F' );
+    my $i      = 0;
+    my ( @problems, %paths );
+    foreach my $radix ( sort { $a <=> $b } keys(%lengths) ) {
+        my $alphabet = join( '', map { chr( 256 + $_ ) } 0 .. $radix - 1 );
+        foreach my $length ( @{ $lengths{$radix} } ) {
+            foreach my $tweak_length ( @tweaks[ map { ( $i + $_ ) % @tweaks } 0, 1 ] ) {
+                $i++;
+                my %args   = ( alphabet => $alphabet, length => $length, key => $key, tweak => join( '', map { chr( ( $i * 7 + $_ ) % 256 ) } 1 .. $tweak_length ) );
+                my $native = URI::Shortener::FF1->new(%args);
+                my $big    = URI::Shortener::FF1->new( %args, bigint => 1 );
+                $paths{ $native->{native} ? 'native' : 'bigint' }++;
+
+                my $plain = [ map { ( $i * 31 + $_ * 7 ) % $radix } 1 .. $length ];
+                my $label = "radix $radix, length $length, tweak of $tweak_length bytes";
+                my $c     = $native->encrypt_digits($plain);
+                push( @problems, "$label: the two paths differ" )                 if "@{$c}" ne "@{ $big->encrypt_digits($plain) }";
+                push( @problems, "$label: decrypt_digits() does not reverse it" ) if "@{ $native->decrypt_digits($c) }" ne "@{$plain}";
+                push( @problems, "$label: Math::BigInt does not reverse it" )     if "@{ $big->decrypt_digits($c) }" ne "@{$plain}";
+            }
+        }
+    }
+    is( \@problems, [], "$i sets of parameters: both kinds of arithmetic give the same output, and decryption reverses it" );
+    ok( $paths{native} && $paths{bigint}, "Some of them chose perl integers, and some chose Math::BigInt" );
+
+    # No other implementation publishes a vector with a tweak of more than 255 bytes, so these values come from this
+    # one.  They pin the 4-byte tweak length in the first block, which the agreement above cannot see.
+    my %pinned = ( 256 => '8501145258', 1000 => '0241388747' );
+    foreach my $tweak_length ( sort { $a <=> $b } keys(%pinned) ) {
+        foreach my $bigint ( 0, 1 ) {
+            my $ff1 = URI::Shortener::FF1->new(
+                alphabet => $DIGITS,
+                length   => 10,
+                key      => pack( 'H*', $KEY{128} ),
+                tweak    => join( '', map { chr( $_ % 256 ) } 0 .. $tweak_length - 1 ),
+                bigint   => $bigint,
+            );
+            is( join( '', @{ $ff1->encrypt_digits( [ 0 .. 9 ] ) } ), $pinned{$tweak_length}, "A tweak of $tweak_length bytes gives the pinned cipher of 0123456789, bigint=$bigint" );
+        }
+    }
+};
+
 subtest 'round trip' => sub {
     foreach my $bigint ( 0, 1 ) {
         my $ff1 = _ff1( alphabet => 'ACGT', length => 10, bigint => $bigint );
@@ -157,7 +211,8 @@ subtest 'bad input' => sub {
         qr/length/sxaa,
         "A length of 1 is refused"
     );
-    like( dies { URI::Shortener::FF1->new( alphabet => 'ACGT', length => 10 ) }, qr/key/sxaa, "A key is required" );
+    like( dies { _ff1( alphabet => 'ACGT', length => 4_294_967_296 ) },          qr/less[ ]than[ ]2[*][*]32/sxaa, "A length of 2**32 is refused, before new() computes 4 ** length" );
+    like( dies { URI::Shortener::FF1->new( alphabet => 'ACGT', length => 10 ) }, qr/key/sxaa,                     "A key is required" );
 
     my $ff1 = _ff1( alphabet => 'ACGT', length => 10 );
     like( dies { $ff1->encrypt(-1) },    qr/integer/sxaa, "A negative id is refused" );
@@ -174,7 +229,7 @@ __END__
 =head1 DESCRIPTION
 
 Tests URI::Shortener::FF1 against the nine FF1 samples of NIST, with and without a tweak.
-Tests that perl integers and Math::BigInt give the same output, that decrypt() reverses encrypt(),
+Tests that perl integers and Math::BigInt give the same output, also for radixes up to 65536 and tweaks up to 1000 bytes, that decrypt() reverses encrypt(),
 that an id past the end of the space dies, and that bad options die.
 
 =cut

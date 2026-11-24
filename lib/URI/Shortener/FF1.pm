@@ -64,7 +64,7 @@ No character can be in the string two times.
 =item C<length>
 
 The length of each output string.
-It must be 2 or more.
+It must be 2 or more, and less than 2**32, which is the maximum of the standard.
 
 C<length(alphabet) ** length> must be 1,000,000 or more.
 This is the minimum that NIST SP 800-38G sets.
@@ -111,6 +111,7 @@ sub new {
 
     my $length = $args{length} // '';
     die "The length must be an integer of 2 or more\n" if $length !~ m{\A\d+\z}sxaa || $length < 2;
+    die "The length must be less than 2**32\n"         if $length >= $TWO_32;
 
     my $space = Math::BigInt->new($radix)->bpow($length);
     die "The space of alphabet ** length has $space strings, and FF1 needs $MIN_SPACE or more.  Use a longer alphabet or length.\n" if $space < $MIN_SPACE;
