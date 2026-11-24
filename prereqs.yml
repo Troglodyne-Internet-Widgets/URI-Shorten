@@ -4,3 +4,7 @@
 runtime:
   requires:
     perl: '5.014'
+# The tests shorten into sqlite, and no file of the tests loads this driver by name.
+test:
+  requires:
+    DBD::SQLite: 0

@@ -3,16 +3,17 @@ package URI::Shortener;
 #ABSTRACT: Shorten URIs so that you don't have to rely on external services
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+no autovivification;
 
-use v5.012;
+use 5.014;
 
 use Capture::Tiny qw{capture_merged};
 use Carp::Always;
-use POSIX qw{floor};
 use DBI;
 use File::Touch;
 use Crypt::PRNG;
+use Time::HiRes qw{time};
 
 =head1 SYNOPSIS
 
@@ -266,14 +267,14 @@ Which I should hope is more than enough for most use cases.
 =cut
 
 sub new {
-    my $class = shift;
+    my ( $class, @args ) = @_;
     my %options = (
         %$SCHEMA_NAMES,
-        @_
+        @args,
     );
     $options{dbtype} //= 'sqlite';
 
-    $options{domain} ||= join('',('a'..'z','A'..'Z'));
+    $options{domain} ||= join( '', ( 'a' .. 'z', 'A' .. 'Z' ) );
 
     foreach my $required (qw{domain prefix dbname seed}) {
         die "$required required" unless $options{$required};
@@ -281,17 +282,20 @@ sub new {
     $options{length} = 12 if !$options{length} || $options{length} < 0;
 
     # Strip trailing slash from prefix
-    $options{prefix} =~ s|/+$||;
+    $options{prefix} =~ s{/+\z}{}sxaa;
 
     $options{sqlite_schema} = $SCHEMA_SQLITE;
     $options{mysql_schema}  = $SCHEMA_MYSQL;
     $options{pg_schema}     = $SCHEMA_PG;
 
     # Mongle the schema appropriately
-    foreach my $sql_obj (keys(%$SCHEMA_NAMES)) {
-        $options{sqlite_schema} =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-        $options{mysql_schema}  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
-        $options{pg_schema}     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmx;
+    foreach my $sql_obj ( keys(%$SCHEMA_NAMES) ) {
+
+        # These names are put into SQL text, as a placeholder cannot stand for an identifier.
+        die "$sql_obj must be a plain SQL identifier" unless $options{$sql_obj} =~ m{\A[[:alpha:]_][[:alnum:]_]*\z}sxaa;
+        $options{sqlite_schema}                                                 =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmsxaa;
+        $options{mysql_schema}                                                  =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmsxaa;
+        $options{pg_schema}                                                     =~ s/\Q$sql_obj\E/$options{$sql_obj}/gmsxaa;
     }
 
     $options{dbh} = {};
@@ -311,8 +315,8 @@ Uses the passed seed + id as the seed, and builds string_from via the domain pas
 
 sub cipher {
     my ( $self, $id ) = @_;
-    my $rr = Crypt::PRNG->new('Fortuna', $self->{seed} + $id);
-    return $rr->string_from($self->{domain}, $self->{length});
+    my $rr = Crypt::PRNG->new( 'Fortuna', $self->{seed} + $id );
+    return $rr->string_from( @{$self}{qw{domain length}} );
 }
 
 =head2 shorten( STRING $uri)
@@ -321,7 +325,11 @@ Transform original URI into a shortened one.
 
 =cut
 
-my $smash=0;
+# The table names that are put into the SQL below are checked by new() to be plain identifiers.
+# A placeholder cannot stand for an identifier, and every value goes through a placeholder.
+## no critic (ValuesAndExpressions::PreventSQLInjection)
+my $smash = 0;
+
 sub shorten {
     my ( $self, $uri ) = @_;
 
@@ -330,13 +338,15 @@ sub shorten {
     my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $uri );
     $rows //= [];
     if (@$rows) {
-        return $self->{prefix}."/".$rows->[0]{cipher} if $rows->[0]{cipher};
-        my $ciphered = $self->cipher( $rows->[0]{id} );
-        my $worked = $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET cipher=? WHERE id=?", undef, $ciphered, $rows->[0]{id} );
+        my ($row) = @{$rows};
+        return $self->{prefix} . "/" . $row->{cipher} if $row->{cipher};
+        my $ciphered = $self->cipher( $row->{id} );
+        my $worked   = $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET cipher=? WHERE id=?", undef, $ciphered, $row->{id} );
+
         # In the (incredibly rare) event of a collision, just burn the row and move on.
-        if (!$worked) {
+        if ( !$worked ) {
             warn "DANGER: cipher collision detected.";
-            $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET uri=? WHERE id=?", undef, "$uri-BURNED$smash", $rows->[0]{id} ) or die "Could not burn row";
+            $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET uri=? WHERE id=?", undef, "$uri-BURNED$smash", $row->{id} ) or die "Could not burn row";
             $smash++;
             die "Too many failures to avoid name collisions encountered, prune your DB!" if $smash > 64;
             goto \&shorten;
@@ -352,7 +362,7 @@ sub shorten {
     }
 
     my $qq = "INSERT INTO $self->{uri_tablename} (uri,created,prefix_id) VALUES (?,?,(SELECT id FROM $self->{prefix_tablename} WHERE prefix=?))";
-    $self->_dbh()->do( $qq, undef, $uri, time(), $self->{prefix} ) or die $self->_dbh()->errstr;
+    $self->_dbh()->do( $qq, undef, $uri, int( time() ), $self->{prefix} ) or die $self->_dbh()->errstr;
     goto \&shorten;
 }
 
@@ -364,14 +374,15 @@ Transform shortened URI into it's original.
 
 sub lengthen {
     my ( $self, $uri ) = @_;
-    my ($cipher) = $uri =~ m|^\Q$self->{prefix}\E/(.*)$|;
+    my ($cipher) = $uri =~ m{\A\Q$self->{prefix}\E/(.*)\z}msxaa;
 
     my $query = "SELECT uri FROM $self->{uri_tablename} WHERE cipher=? AND prefix_id IN (SELECT id FROM $self->{prefix_tablename} WHERE prefix=?)";
 
     my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $cipher, $self->{prefix} );
     $rows //= [];
     return unless @$rows;
-    return $rows->[0]{uri};
+    my ($row) = @{$rows};
+    return $row->{uri};
 }
 
 =head2 prune_before(TIME_T $when)
@@ -385,6 +396,7 @@ sub prune_before {
     $self->_dbh()->do( "DELETE FROM $self->{uri_tablename} WHERE created < ?", undef, $when ) or die $self->_dbh()->errstr;
     return 1;
 }
+## use critic
 
 my %db_dispatch = (
     sqlite => \&_sqlite_dbh,
@@ -394,7 +406,7 @@ my %db_dispatch = (
 
 sub _dbh {
     my ($self) = @_;
-    return $db_dispatch{$self->{dbtype}}->(@_);
+    return $db_dispatch{ $self->{dbtype} }->($self);
 }
 
 sub _sqlite_dbh {
@@ -403,11 +415,11 @@ sub _sqlite_dbh {
     return $self->{dbh}->{$dbname} if exists $self->{dbh}->{$dbname};
 
     # Some systems splash down without this.  YMMV.
-    File::Touch::touch($dbname) if $dbname ne ':memory:' && !-f $dbname;
+    File::Touch::touch($dbname) if $dbname ne ':memory:' && !-e $dbname;
 
     my $db = DBI->connect( "dbi:SQLite:dbname=$dbname", "", "" );
     $db->{sqlite_allow_multiple_statements} = 1;
-    $db->do($self->{sqlite_schema}) or die "Could not ensure database consistency: " . $db->errstr;
+    $db->do( $self->{sqlite_schema} ) or die "Could not ensure database consistency: " . $db->errstr;
     $db->{sqlite_allow_multiple_statements} = 0;
     $self->{dbh}->{$dbname} = $db;
 
@@ -430,11 +442,11 @@ sub _pg_dbh {
     my $user = $self->{dbuser} // $ENV{PGUSER};
     my $pass = $self->{dbpass} // $ENV{PGPASSWORD};
 
-    my $db = DBI->connect("dbi:Pg:dbname=$dbname;host=$host;port=$port", $user, $pass);
+    my $db = DBI->connect( "dbi:Pg:dbname=$dbname;host=$host;port=$port", $user, $pass );
 
     #XXX pg is noisy even when you say 'IF NOT EXISTS'
     my $result;
-    capture_merged { $result = $db->do($self->{pg_schema}) };
+    capture_merged { $result = $db->do( $self->{pg_schema} ) };
     die "Could not ensure database consistency: " . $db->errstr unless $result;
 
     $self->{dbh}->{$dbname} = $db;
@@ -446,22 +458,22 @@ sub _my_dbh {
     my $dbname = $self->{dbname};
     return $self->{dbh}->{$dbname} if exists $self->{dbh}->{$dbname};
 
-    my $host = $self->{dbhost} // $ENV{MYSQL_HOST} || 'localhost';
+    my $host = $self->{dbhost} // $ENV{MYSQL_HOST}     || 'localhost';
     my $port = $self->{dbport} // $ENV{MYSQL_TCP_PORT} || 3306;
     my $user = $self->{dbuser} // $ENV{DBI_USER};
     my $pass = $self->{dbpass} // $ENV{MYSQL_PWD};
 
     # Handle the mysql defaults file
-    my $defaults_file = $self->{mysql_read_default_file} // "$ENV{HOME}/.my.cnf";
+    my $defaults_file  = $self->{mysql_read_default_file}  // "$ENV{HOME}/.my.cnf";
     my $defaults_group = $self->{mysql_read_default_group} // 'client';
-    my $df = "";
-    $df .= "mysql_read_default_file=$defaults_file;"   if -f $defaults_file;
+    my $df             = "";
+    $df .= "mysql_read_default_file=$defaults_file;"   if -e $defaults_file;
     $df .= "mysql_read_default_group=$defaults_group;" if $defaults_group;
 
-    my $dsn = "dbi:mysql:mysql_multi_statements=1;database=$dbname;".$df."host=$host;port=$port";
+    my $dsn = "dbi:mysql:mysql_multi_statements=1;database=$dbname;" . $df . "host=$host;port=$port";
 
-    my $db = DBI->connect($dsn, $user, $pass);
-    $db->do($self->{mysql_schema}) or die "Could not ensure database consistency: " . $db->errstr;
+    my $db = DBI->connect( $dsn, $user, $pass );
+    $db->do( $self->{mysql_schema} ) or die "Could not ensure database consistency: " . $db->errstr;
 
     $self->{dbh}->{$dbname} = $db;
     return $db;
@@ -478,34 +490,39 @@ To support this would require re-ID/indexing everything which is nontrivial work
 
 =cut
 
+# Table names are checked by new() to be plain identifiers, see shorten().
+## no critic (ValuesAndExpressions::PreventSQLInjection)
 sub migrate {
-    my ($self, $new) = @_;
+    my ( $self, $new ) = @_;
     my $from_dbh = $self->_dbh();
     my $to_dbh   = $new->_dbh();
 
     my $prefixes = $from_dbh->selectall_arrayref(qq|SELECT * FROM $self->{prefix_tablename}|);
-    _batch_insert($to_dbh, $new->{prefix_tablename}, @$prefixes) if @$prefixes;
+    _batch_insert( $to_dbh, $new->{prefix_tablename}, @$prefixes ) if @$prefixes;
 
     my $uris = $from_dbh->selectall_arrayref(qq|SELECT * FROM $self->{uri_tablename}|);
-    _batch_insert($to_dbh, $new->{uri_tablename}, @$uris) if @$uris;
+    _batch_insert( $to_dbh, $new->{uri_tablename}, @$uris ) if @$uris;
+    return 1;
 }
 
 # Gotta batch stuff cuz sqlite has a 10k param limit
 sub _batch_insert {
-    my ($dbh, $tbl, @data) = @_;
-    my $ncols = @{$data[0]};
+    my ( $dbh, $tbl, @data ) = @_;
+    my $ncols = @{ $data[0] };
     die "No columns in table $tbl" unless $ncols;
 
-    while (my @batch = splice(@data, 0,int(10_000 / $ncols)) ) {
-        my $param = join(',', map { '?' } @{$batch[0]});
-        my $bind = join(',', map { "($param)" } @batch);
+    while ( my @batch = splice( @data, 0, int( 10_000 / $ncols ) ) ) {
+        my $param = join( ',', map { '?' } @{ $batch[0] } );
+        my $bind  = join( ',', map { "($param)" } @batch );
 
         my $query = "INSERT INTO $tbl VALUES $bind";
 
-        print "Migrating ".scalar(@batch)." rows (".scalar(@data)." left) to $tbl...";
-        $dbh->do($query, undef, map { @$_ } @batch);
-        print "Done.\n"
+        print "Migrating " . scalar(@batch) . " rows (" . scalar(@data) . " left) to $tbl...";
+        $dbh->do( $query, undef, map { @$_ } @batch );
+        print "Done.\n";
     }
+    return 1;
 }
+## use critic
 
 1;

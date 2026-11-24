@@ -1,11 +1,13 @@
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+
+use 5.014;
 
 use Test::Fatal qw{exception};
 use FindBin::libs;
 use URI::Shortener;
 use Capture::Tiny qw{capture_merged};
-use DBD::SQLite;
+use Time::HiRes   qw{time};
 
 use Test::More tests => 5;
 
@@ -19,10 +21,10 @@ subtest 'happy path' => sub {
     );
     my $uri   = 'https://mydomain.test/somePath';
     my $short = $s->shorten($uri);
-    is( $short,               'https://go.mydomain.test/short/CTTACCGGTC', "I do this...for da shorteez.  Especially URIs" );
+    is( $short, 'https://go.mydomain.test/short/CTTACCGGTC', "I do this...for da shorteez.  Especially URIs" );
     $short = $s->shorten($uri);
     is( $short,               'https://go.mydomain.test/short/CTTACCGGTC', "caching works" );
-    is( $s->lengthen($short), $uri,                                "Lengthens, Hardens, Girthens & Fully Pleasures your URI" );
+    is( $s->lengthen($short), $uri,                                        "Lengthens, Hardens, Girthens & Fully Pleasures your URI" );
     $s->prune_before( time() + 10 );
     is( $s->lengthen($short), undef, "Pruning works" );
 
@@ -31,11 +33,17 @@ subtest 'happy path' => sub {
 subtest 'Sovereign is he who tests his exceptions' => sub {
     my %bad;
 
-    like( exception { URI::Shortener->new(%bad) }, qr/prefix/i, "You've just been pre-fixated" );
+    like( exception { URI::Shortener->new(%bad) }, qr/prefix/isxaa, "You've just been pre-fixated" );
     $bad{prefix} = 'jumbo://hugs';
-    like( exception { URI::Shortener->new(%bad) }, qr/dbname/i, "Get in the DB shinji" );
+    like( exception { URI::Shortener->new(%bad) }, qr/dbname/isxaa, "Get in the DB shinji" );
     $bad{dbname} = ':memory:';
-    like( exception { URI::Shortener->new(%bad) }, qr/seed/i, "My seed hath slain the chess dragon" );
+    like( exception { URI::Shortener->new(%bad) }, qr/seed/isxaa, "My seed hath slain the chess dragon" );
+
+    $bad{seed}          = 1337;
+    $bad{uri_tablename} = 'uris; DROP TABLE prefix';
+    like( exception { URI::Shortener->new(%bad) }, qr/uri_tablename[ ]must[ ]be/isxaa, "A table name that is not an identifier is refused" );
+    $bad{uri_tablename} = 'uris';
+    is( exception { URI::Shortener->new(%bad) }, undef, "A plain table name is accepted" );
 };
 
 # pathological case
@@ -47,18 +55,24 @@ subtest 'going to the circle 8 track' => sub {
         seed   => 1337,
         length => 1,
     );
-    is( $s->shorten('foo'), 'bar/A', "Works fine, right?");
-    like( exception { capture_merged { $s->shorten('hug') } }, qr/too many failures/i, "Stack smashing guard encountered");
+    is( $s->shorten('foo'), 'bar/A', "Works fine, right?" );
+    like(
+        exception {
+            capture_merged { $s->shorten('hug') }
+        },
+        qr/too[ ]many[ ]failures/isxaa,
+        "Stack smashing guard encountered"
+    );
 };
 
 # Alternative names
 subtest 'alternative names' => sub {
     my $s = URI::Shortener->new(
-        domain => 'ACGT',
-        prefix => 'https://go.mydomain.test/short',
-        dbname => ':memory:',
-        seed   => 1337,
-        length => 10,
+        domain           => 'ACGT',
+        prefix           => 'https://go.mydomain.test/short',
+        dbname           => ':memory:',
+        seed             => 1337,
+        length           => 10,
         uri_tablename    => 'shortener_uris',
         prefix_tablename => 'shortener_prefix',
         uri_idxname      => 'shortener_uri_idx',
@@ -68,10 +82,10 @@ subtest 'alternative names' => sub {
     );
     my $uri   = 'https://mydomain.test/somePath';
     my $short = $s->shorten($uri);
-    is( $short,               'https://go.mydomain.test/short/CTTACCGGTC', "I do this...for da shorteez.  Especially URIs" );
+    is( $short, 'https://go.mydomain.test/short/CTTACCGGTC', "I do this...for da shorteez.  Especially URIs" );
     $short = $s->shorten($uri);
     is( $short,               'https://go.mydomain.test/short/CTTACCGGTC', "caching works" );
-    is( $s->lengthen($short), $uri,                                "Lengthens, Hardens, Girthens & Fully Pleasures your URI" );
+    is( $s->lengthen($short), $uri,                                        "Lengthens, Hardens, Girthens & Fully Pleasures your URI" );
     $s->prune_before( time() + 10 );
     is( $s->lengthen($short), undef, "Pruning works" );
 };
@@ -86,16 +100,16 @@ subtest 'migration' => sub {
     );
     my $uri   = 'https://mydomain.test/somePath';
     my $short = $s->shorten($uri);
-    is( $short,               'https://go.mydomain.test/short/dZennAUZHG', "Can build basic shortener DB" );
+    is( $short, 'https://go.mydomain.test/short/dZennAUZHG', "Can build basic shortener DB" );
 
     # Slam in uris to force batching
     my $uri2;
-    foreach my $idx (0..10_000) {
+    foreach my $idx ( 0 .. 10_000 ) {
         $uri2 = "https://mydomain$idx/somePath";
-        eval { $s->shorten($uri2) };
+        eval { $s->shorten($uri2); 1 } or diag("shorten died for $uri2: $@");
     }
 
-    my $s2 =URI::Shortener->new(
+    my $s2 = URI::Shortener->new(
         prefix => 'https://go.mydomain.test/short',
         dbname => ':memory:',
         seed   => 1337,
@@ -103,9 +117,20 @@ subtest 'migration' => sub {
     );
 
     $s->migrate($s2);
-    my $long = $s2->lengthen($s->shorten($uri));
-    is( $long, $uri, "First record migrated");
-    $long = $s2->lengthen($s->shorten($uri2));
-    is( $long, $uri2, "10kth record migrated");
+    my $long = $s2->lengthen( $s->shorten($uri) );
+    is( $long, $uri, "First record migrated" );
+    $long = $s2->lengthen( $s->shorten($uri2) );
+    is( $long, $uri2, "10kth record migrated" );
 };
+
+1;
+
+__END__
+
+=head1 DESCRIPTION
+
+Tests that a URI shortens and lengthens, that bad arguments die, that a full code space dies,
+that table names can change, and that a database migrates to another one.
+
+=cut
 
