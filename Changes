@@ -3,6 +3,12 @@ Revision history for URI-Shorten
 1.007 2026-11-24 TEODESIAN
     - Bring the code to the harness standards for perlcritic.
     - The constructor now dies when a table or index name is not a plain SQL identifier.
+    - The limit of 64 cipher collisions is now for each call to shorten().
+      Before, the count was for the whole process and did not go back to zero.
+      A process that ran for a long time died on each collision after the 64th.
+    - A burned row now gets a uri that ends in "-BURNED-" and its row ID.
+      Before, a second burn of the same URI in a new process used the same uri again.
+      Then shorten() died with "Could not burn row" on sqlite and Postgres.
 
 1.006 2026-02-19 TEODESIAN
     - Add needed test dep

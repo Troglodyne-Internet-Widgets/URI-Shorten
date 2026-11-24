@@ -74,9 +74,11 @@ As there is no guarantee of uniform distribution, such as in a Mersenne Twister,
 Even were we using such, nobody ever implements nth-guess, which means we have to slog through actual generation which is worse performing than miss/retry in practice.
 
 In such events, we simply burn the ID (leaving it as a dead record) and move on until we succeed.
-This is implemented by goto &shorten, which means in the event you run out of possible URIs, you will smash the stack or fill your disk (whichever comes first).
+The dead record keeps its ID, and its uri becomes the original URI followed by "-BURNED-" and the ID.
+If you run out of possible URIs, each new try fails again and adds one more dead record to your disk.
 
-As such we die after failing 64 times to prevent such outcomes.
+As such, one call to shorten() dies when it gets more than 64 collisions.
+The count starts again at zero for each call.
 This is also why a pruning method for old records has been provided.
 
 =head2 IMPORTANT
@@ -328,33 +330,39 @@ Transform original URI into a shortened one.
 # The table names that are put into the SQL below are checked by new() to be plain identifiers.
 # A placeholder cannot stand for an identifier, and every value goes through a placeholder.
 ## no critic (ValuesAndExpressions::PreventSQLInjection)
-my $smash = 0;
-
 sub shorten {
     my ( $self, $uri ) = @_;
 
-    my $query = "SELECT id, cipher FROM $self->{uri_tablename} WHERE uri=?";
+    my $query      = "SELECT id, cipher FROM $self->{uri_tablename} WHERE uri=?";
+    my $collisions = 0;
 
-    my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $uri );
-    $rows //= [];
-    if (@$rows) {
+    # Each pass returns, stores the URI for the next pass to find, or burns a row whose cipher collided.
+    while (1) {
+        my $rows = $self->_dbh()->selectall_arrayref( $query, { Slice => {} }, $uri );
+        $rows //= [];
+        if ( !@$rows ) {
+            $self->_insert_uri($uri);
+            next;
+        }
+
         my ($row) = @{$rows};
         return $self->{prefix} . "/" . $row->{cipher} if $row->{cipher};
         my $ciphered = $self->cipher( $row->{id} );
         my $worked   = $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET cipher=? WHERE id=?", undef, $ciphered, $row->{id} );
+        return $self->{prefix} . "/" . $ciphered if $worked;
 
-        # In the (incredibly rare) event of a collision, just burn the row and move on.
-        if ( !$worked ) {
-            warn "DANGER: cipher collision detected.";
-            $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET uri=? WHERE id=?", undef, "$uri-BURNED$smash", $row->{id} ) or die "Could not burn row";
-            $smash++;
-            die "Too many failures to avoid name collisions encountered, prune your DB!" if $smash > 64;
-            goto \&shorten;
-        }
-        return $self->{prefix} . "/" . $ciphered;
+        # The row ID is unique, so the new uri of the dead record is unique too.
+        warn "DANGER: cipher collision detected.";
+        $self->_dbh()->do( "UPDATE $self->{uri_tablename} SET uri=? WHERE id=?", undef, "$uri-BURNED-$row->{id}", $row->{id} ) or die "Could not burn row";
+        $collisions++;
+        die "Too many failures to avoid name collisions encountered, prune your DB!" if $collisions > 64;
     }
+    return;
+}
 
-    # Otherwise we need to store the URI and retrieve the ID.
+sub _insert_uri {
+    my ( $self, $uri ) = @_;
+
     my $pis        = "SELECT id FROM $self->{prefix_tablename} WHERE prefix=?";
     my $has_prefix = $self->_dbh->selectall_arrayref( $pis, { Slice => {} }, $self->{prefix} );
     unless (@$has_prefix) {
@@ -363,7 +371,7 @@ sub shorten {
 
     my $qq = "INSERT INTO $self->{uri_tablename} (uri,created,prefix_id) VALUES (?,?,(SELECT id FROM $self->{prefix_tablename} WHERE prefix=?))";
     $self->_dbh()->do( $qq, undef, $uri, int( time() ), $self->{prefix} ) or die $self->_dbh()->errstr;
-    goto \&shorten;
+    return 1;
 }
 
 =head2 lengthen( STRING $uri)

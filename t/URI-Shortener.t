@@ -8,8 +8,34 @@ use FindBin::libs;
 use URI::Shortener;
 use Capture::Tiny qw{capture_merged};
 use Time::HiRes   qw{time};
+use DBI;
+use File::Temp qw{tempdir};
 
-use Test::More tests => 5;
+use Test::More tests => 7;
+
+# Insert a row that holds the cipher of the next row ID, so that the next new URI collides once.
+sub _plant_collision {
+    my ( $dbh, $s, $squatter ) = @_;
+    $dbh->do( "INSERT INTO uris (uri, created, prefix_id) VALUES (?, ?, (SELECT id FROM prefix LIMIT 1))", undef, $squatter, int( time() ) );
+    my ($last_id) = $dbh->selectrow_array("SELECT seq FROM sqlite_sequence WHERE name = 'uris'");
+    $dbh->do( "UPDATE uris SET cipher = ? WHERE uri = ?", undef, $s->cipher( $last_id + 1 ), $squatter );
+    return 1;
+}
+
+sub _shortener_on {
+    my ($dbname) = @_;
+    return URI::Shortener->new(
+        prefix => 'https://go.test.test/short',
+        dbname => $dbname,
+        seed   => 1337,
+        length => 10,
+    );
+}
+
+sub _dbh_on {
+    my ($dbname) = @_;
+    return DBI->connect( "dbi:SQLite:dbname=$dbname", "", "", { RaiseError => 1, PrintError => 0 } );
+}
 
 subtest 'happy path' => sub {
     my $s = URI::Shortener->new(
@@ -123,6 +149,63 @@ subtest 'migration' => sub {
     is( $long, $uri2, "10kth record migrated" );
 };
 
+subtest 'the collision limit counts per call' => sub {
+    my $dbname = tempdir( CLEANUP => 1 ) . '/uris.db';
+    my $s      = _shortener_on($dbname);
+    $s->shorten('https://test.test/warmup');
+    my $dbh = _dbh_on($dbname);
+
+    my ( $calls, $collided ) = ( 0, 0 );
+    foreach my $n ( 1 .. 100 ) {
+        _plant_collision( $dbh, $s, "https://test.test/squatter$n" );
+        my $uri = "https://test.test/page$n";
+        my ( $short, $err );
+        my $out = capture_merged {
+            $err = exception { $short = $s->shorten($uri) }
+        };
+        if ($err) {
+            fail("shorten() lives through a collision in call $n");
+            diag($err);
+            last;
+        }
+        $calls++    if ( $s->lengthen($short) // '' ) eq $uri;
+        $collided++ if index( $out, 'cipher collision' ) >= 0;
+    }
+    is( $calls,    100, "100 calls in a row each shorten a URI that lengthens back" );
+    is( $collided, 100, "Each of the 100 calls had one collision, more than the limit of 64 for one call" );
+};
+
+# shorten() keeps no state outside the database, so a new object on the same file stands in for a new process.
+subtest 'one URI burned twice by separate shorteners' => sub {
+    my $dbname = tempdir( CLEANUP => 1 ) . '/uris.db';
+    my $uri    = 'https://test.test/burned-twice';
+
+    my $first = _shortener_on($dbname);
+    $first->shorten('https://test.test/warmup');
+    my $dbh = _dbh_on($dbname);
+    _plant_collision( $dbh, $first, 'https://test.test/squatter1' );
+    my ( $short, $err );
+    capture_merged {
+        $err = exception { $short = $first->shorten($uri) }
+    };
+    is( $err,                     undef, "The first burn of the URI lives" );
+    is( $first->lengthen($short), $uri,  "The URI lengthens back after the first burn" );
+
+    # The live row goes away, so the next shortener must store the same URI again.
+    $dbh->do( "DELETE FROM uris WHERE uri = ?", undef, $uri );
+
+    my $second = _shortener_on($dbname);
+    _plant_collision( $dbh, $second, 'https://test.test/squatter2' );
+    capture_merged {
+        $err = exception { $short = $second->shorten($uri) }
+    };
+    is( $err,                      undef, "The second burn of the same URI lives" ) or diag($err);
+    is( $second->lengthen($short), $uri,  "The URI lengthens back after the second burn" );
+
+    my ($dead) = $dbh->selectrow_array("SELECT COUNT(*) FROM uris WHERE cipher IS NULL");
+    is( $dead, 2, "Both burns left a dead record" );
+};
+
 1;
 
 __END__
@@ -131,6 +214,9 @@ __END__
 
 Tests that a URI shortens and lengthens, that bad arguments die, that a full code space dies,
 that table names can change, and that a database migrates to another one.
+Also tests that a cipher collision burns a row and the call lives,
+that the limit on collisions is for one call and not for the process,
+and that one URI can be burned more than once.
 
 =cut
 
