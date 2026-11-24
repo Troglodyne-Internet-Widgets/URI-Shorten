@@ -1,0 +1,9 @@
+/.build/
+/URI-Shortener-*/
+/URI-Shortener-*.tar.gz
+/blib/
+/cover_db/
+/nytprof*
+*.bak
+*.swp
+*~
