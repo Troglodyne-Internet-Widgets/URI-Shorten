@@ -9,6 +9,9 @@ Revision history for URI-Shorten
     - A burned row now gets a uri that ends in "-BURNED-" and its row ID.
       Before, a second burn of the same URI in a new process used the same uri again.
       Then shorten() died with "Could not burn row" on sqlite and Postgres.
+    - The metadata again lists DBD::SQLite as a prerequisite of the tests.
+      The build did not read prereqs.yml, so the tests failed where DBD::SQLite was not installed.
+    - The tarball no longer contains the git hooks, CLAUDE.md, dist.ini, weaver.ini and prereqs.yml.
 
 1.006 2026-02-19 TEODESIAN
     - Add needed test dep
