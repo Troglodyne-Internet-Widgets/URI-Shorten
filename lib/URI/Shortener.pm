@@ -13,7 +13,10 @@ use Carp::Always;
 use DBI;
 use File::Touch;
 use Crypt::PRNG;
-use Time::HiRes qw{time};
+use Digest::SHA  qw{hmac_sha256};
+use Scalar::Util qw{looks_like_number};
+use Time::HiRes  qw{time};
+use URI::Shortener::FF1;
 
 =head1 SYNOPSIS
 
@@ -28,7 +31,7 @@ use Time::HiRes qw{time};
     my $uri = 'https://mydomain.test/somePath';
     # Persistently memoizes via sqlite
     my $short = $s->shorten( $uri );
-    # Short will look like 'https://go.mydomain.test/short/szAgqIE
+    # Short will look like 'https://go.mydomain.test/short/GAATTACTAGTT'
     ...
     # Presumption here is that your request router knows what to do with this, e.g. issue a 302:
     my $long = $s->lengthen( $short );
@@ -66,20 +69,68 @@ This is common practice for "unlisted" posts sent by mailing lists which want so
 
 =head2 ALGORITHM
 
-The particular algorithm used to generate the ciphertext composing the shortened URI is Crypt::PRNG's 'fortuna'.
-This is used to make it very difficult to guess valid shortened URIs.
+The short part of each URI is the "cipher".
+cipher() makes it from the database row ID.
+There are two algorithms.
 
-The seed used is the one passed to the constructor plus the database row ID.
-As there is no guarantee of uniform distribution, such as in a Mersenne Twister, sometimes this will fail.
-Even were we using such, nobody ever implements nth-guess, which means we have to slog through actual generation which is worse performing than miss/retry in practice.
+=over 4
 
-In such events, we simply burn the ID (leaving it as a dead record) and move on until we succeed.
+=item ff1 (the default)
+
+FF1 is a format-preserving cipher from NIST Special Publication 800-38G.
+cipher() writes the row ID as a number of C<length> digits in base C<length(domain)>.
+Each character of the domain is one digit.
+Then FF1 encrypts these digits with AES and an empty tweak.
+The result is C<length> characters from the domain.
+
+FF1 is a bijection: each row ID gives a different cipher, and decipher() gives the row ID back.
+So two rows that use ff1 never get the same cipher.
+
+The AES key is the first 16 bytes of HMAC-SHA256 of the seed and a fixed label, "URI::Shortener FF1 v1".
+The seed is used as a string, so it can be any string.
+Seeds that are near each other, such as 1337 and 1338, give keys that have no relation to each other.
+
+The number of possible ciphers is C<length(domain) ** length>.
+cipher() dies with "space exhausted" for a row ID that is that number or more.
+Then you must use a new domain or length, or prune.
+
+=item fortuna
+
+This is the algorithm of version 1 and earlier.
+Use C<< algorithm => 'fortuna' >> to keep it.
+It seeds the Fortuna generator of Crypt::PRNG with the seed plus the row ID, and takes C<length> random characters from the domain.
+Two row IDs can give the same cipher.
+The seed must be a number.
+
+=back
+
+When a new cipher is the same as a cipher that is already in the database, shorten() burns the row and tries again with a new row.
+"Burn" means that the row stays as a dead record.
 The dead record keeps its ID, and its uri becomes the original URI followed by "-BURNED-" and the ID.
+With fortuna, this can occur at any time, and it occurs more frequently as the database fills.
 If you run out of possible URIs, each new try fails again and adds one more dead record to your disk.
 
-As such, one call to shorten() dies when it gets more than 64 collisions.
+One call to shorten() dies when it gets more than 64 collisions.
 The count starts again at zero for each call.
 This is also why a pruning method for old records has been provided.
+
+=head2 UPGRADE FROM FORTUNA TO FF1
+
+Version 2 changes the default algorithm from fortuna to ff1.
+If you do not set C<algorithm>, an existing database gets ff1 ciphers for its new rows.
+Use the same domain, length and seed as before.
+
+shorten() calls cipher() only for a row that has no cipher yet.
+Stored ciphers do not change, and lengthen() reads them from the database.
+So the short URIs that you made before the upgrade continue to work.
+
+A new ff1 cipher can be the same as an old fortuna cipher that is in the database.
+Then shorten() burns that row and tries the next row ID, as described above.
+The ff1 cipher of each row ID is different.
+So each old cipher can block one row ID at most, one time, for the life of the database.
+The number of burns after an upgrade is never more than the number of old rows.
+
+To keep the old ciphers for new rows too, use C<< algorithm => 'fortuna' >>.
 
 =head2 IMPORTANT
 
@@ -94,7 +145,7 @@ It only takes one right guess to ruin someone's day.
 
 I strongly recommend that you configure whatever serves these URIs be behind a fail2ban rule that bans 3 or more 4xx responses.
 
-The domain & seed used is not stored in the DB, so don't lose it.
+The domain, length, seed and algorithm are not stored in the DB, so don't lose them.
 You can't use a DB valid for any other domain/seed and expect anything but GIGO.
 
 Multiple different prefixes for the shortened URIs are OK though.
@@ -148,6 +199,9 @@ Pull requests welcome.
 
 
 =cut
+
+# The version in this label is part of the key.  A new way to make the key needs a new label.
+my $FF1_KEY_LABEL = 'URI::Shortener FF1 v1';
 
 my $SCHEMA_NAMES = {
     uri_tablename    => 'uris',
@@ -253,18 +307,33 @@ Length of the minified path component. Defaulted to 12 when not a member of the 
 
 Input domain string. Shortened path components are a char within this string. By default a..zA..Z.
 
+For ff1, no character can be in the domain two times, and the domain can have 65,536 characters at most.
+
 =item C<seed>
 
-Starting seed of the PRNG.
+The secret that makes the ciphers.
+For ff1 it can be any string.
+For fortuna it must be a number.
+
+=item C<algorithm>
+
+C<ff1> (the default) or C<fortuna>.
+See L</ALGORITHM> and L</UPGRADE FROM FORTUNA TO FF1>.
 
 =back
 
-This is obviously an "N Choose K" situation (n possible chars from 'domain' in 'length' slots).
-The default number of URIs possible is:
+Each of the C<length> characters can be any character of the domain.
+So the number of possible URIs is C<length(domain) ** length>.
+With the default domain of 52 characters and length of 12, this is:
 
-    558,383,307,300
+    52 ** 12 = 390,877,006,486,250,192,896
 
 Which I should hope is more than enough for most use cases.
+
+For ff1, new() dies when this number is less than 1,000,000, the minimum that NIST SP 800-38G sets.
+For example, a domain of 4 characters needs a length of 10 or more.
+
+new() also dies when C<algorithm> is not C<ff1> or C<fortuna>.
 
 =cut
 
@@ -282,6 +351,21 @@ sub new {
         die "$required required" unless $options{$required};
     }
     $options{length} = 12 if !$options{length} || $options{length} < 0;
+
+    $options{algorithm} //= 'ff1';
+    if ( $options{algorithm} eq 'ff1' ) {
+        $options{ff1} = URI::Shortener::FF1->new(
+            alphabet => $options{domain},
+            length   => $options{length},
+            key      => substr( hmac_sha256( "$options{seed}", $FF1_KEY_LABEL ), 0, 16 ),
+        );
+    }
+    elsif ( $options{algorithm} eq 'fortuna' ) {
+        die "The fortuna algorithm needs a numeric seed\n" unless looks_like_number( $options{seed} );
+    }
+    else {
+        die "algorithm must be 'ff1' or 'fortuna'\n";
+    }
 
     # Strip trailing slash from prefix
     $options{prefix} =~ s{/+\z}{}sxaa;
@@ -309,16 +393,37 @@ sub new {
 
 =head2 cipher( INTEGER $id )
 
-Wrapper around Crypt::PRNG::string_from().
+Returns the cipher of the row ID $id: a string of C<length> characters from the domain.
+See L</ALGORITHM>.
 
-Uses the passed seed + id as the seed, and builds string_from via the domain passed to the constructor.
+For ff1, dies with "space exhausted" when $id is C<length(domain) ** length> or more.
 
 =cut
 
 sub cipher {
     my ( $self, $id ) = @_;
+    return $self->{ff1}->encrypt($id) if $self->{ff1};
     my $rr = Crypt::PRNG->new( 'Fortuna', $self->{seed} + $id );
     return $rr->string_from( @{$self}{qw{domain length}} );
+}
+
+=head2 decipher( STRING $cipher )
+
+The reverse of cipher() for the ff1 algorithm.
+Returns the row ID that gives $cipher.
+Returns undef when $cipher has the wrong length, or has a character that is not in the domain.
+
+decipher() does not read the database.
+So it returns an ID for each string of the right form, also when no row has that ID.
+
+Dies for the fortuna algorithm, because fortuna has no reverse.
+
+=cut
+
+sub decipher {
+    my ( $self, $cipher ) = @_;
+    die "decipher() needs the ff1 algorithm\n" unless $self->{ff1};
+    return $self->{ff1}->decrypt($cipher);
 }
 
 =head2 shorten( STRING $uri)
