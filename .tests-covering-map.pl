@@ -61,9 +61,12 @@ return sub {
     my ($path) = @_;
 
     return q{} if $NO_TESTS{$path};
-    return q{} if $path =~ m{\A(?:git-hooks|[.]github|xt)/}sx;
-    return q{} if $path =~ m{[.]md\z}sx;
-    return q{} if $path =~ m{[.]pod\z}sx && $path !~ m{\Alib/}sx;
+
+    # The ACVP vectors, which this test reads and does not load.
+    return 't/URI-Shortener-FF1-vectors.t' if $path =~ m{\At/data/acvp-ff1/.+[.]json\z}sx;
+    return q{}                             if $path =~ m{\A(?:git-hooks|[.]github|xt)/}sx;
+    return q{}                             if $path =~ m{[.]md\z}sx;
+    return q{}                             if $path =~ m{[.]pod\z}sx && $path !~ m{\Alib/}sx;
 
     return;
 };

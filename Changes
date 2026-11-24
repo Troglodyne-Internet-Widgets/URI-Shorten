@@ -1,6 +1,31 @@
 Revision history for URI-Shorten
 
-1.007 2026-11-24 TEODESIAN
+2.000 2026-11-24 TEODESIAN
+    - The default algorithm for ciphers is now ff1, not fortuna.
+      ff1 is the FF1 format-preserving cipher of NIST SP 800-38G, with AES.
+      Each row ID gets a different cipher, so new rows do not collide with each other.
+      To keep the old ciphers, give algorithm => 'fortuna' to new().
+    - Existing databases: stored ciphers do not change, so old short URIs continue to work.
+      New rows get ff1 ciphers if you do not set algorithm.
+      A new cipher can be the same as an old fortuna cipher in the database.
+      Then shorten() burns that row and uses the next row ID.
+      Each old cipher can cause this one time at most.
+    - The ff1 key comes from HMAC-SHA256 of the seed, so a seed can be any string.
+    - For ff1, cipher() dies with "space exhausted" when the row ID is length(domain) ** length or more.
+    - For ff1, new() dies when the domain has a character two times,
+      or when length(domain) ** length is less than 1,000,000.
+      For fortuna, new() dies when the seed is not a number.
+    - For ff1, new() dies when length is 2**32 or more.
+      This is the maximum that NIST SP 800-38G sets.
+      Without this check, Math::BigInt with the LTM library computed a wrong space for such a length.
+    - The tests run FF1 against test vectors from outside this distribution.
+      These are the NIST ACVP vectors and vectors of Bouncy Castle, the Rust crate fpe and the Ubiq C library.
+      By default the tests run some ACVP cases of each group.
+      If RELEASE_TESTING is set, they run all 750.
+    - new() dies when algorithm is not 'ff1' or 'fortuna'.
+    - Add decipher(), which gives the row ID of an ff1 cipher.
+    - Correct the number of possible URIs in the POD.
+      For the defaults it is 52 ** 12, which is 390,877,006,486,250,192,896.
     - Bring the code to the harness standards for perlcritic.
     - The constructor now dies when a table or index name is not a plain SQL identifier.
     - The limit of 64 cipher collisions is now for each call to shorten().
